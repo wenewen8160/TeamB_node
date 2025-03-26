@@ -9,6 +9,15 @@ import upload from "./utils/upload-images.js";
 import admin2Router from "./routes/admin2.js";
 import abRouter from "./routes/activity-list.js";
 import registeredRouter from "./routes/registered.js";
+import memberActivitiesRouter from './routes/member-activities.js'; // 會員查詢已報名活動
+import cityRouter from "./routes/city.js"
+import pdRouter from "./routes/products.js"
+import authRouter from "./routes/auth.js"
+import activityCreateRouter from "./routes/activity-create.js"
+import ecpayRouter from "./routes/ecpay-test-only.js"
+import ordersRouter from "./routes/orders.js"
+import courtRouter from "./routes/court.js"
+
 
 const MysqlStore = mysql_session(session);
 const sessionStore = new MysqlStore({}, db);
@@ -46,6 +55,8 @@ app.use(
   })
 );
 
+
+
 // **** 自訂的 top-level middlewares ****
 app.use((req, res, next) => {
   res.locals.title = "小新的網站"; // 預設的 "頁面 title"
@@ -60,6 +71,14 @@ app.use((req, res, next) => {
 app.use("/admin2", admin2Router);
 app.use("/activity-list", abRouter);
 app.use("/registered", registeredRouter);
+app.use('/members', memberActivitiesRouter); 
+app.use("/city-area", cityRouter);
+app.use("/products", pdRouter);
+app.use('/auth',authRouter);
+app.use("/activity-create", activityCreateRouter);
+app.use("/ecpay-test-only", ecpayRouter);
+app.use("/orders", ordersRouter);
+app.use("/court", courtRouter);
 
 
 
@@ -159,68 +178,8 @@ app.get("/try-db", async (req, res) => {
   const [results, fields] = await db.query(sql);
   res.json({ results, fields });
 });
-// 登入的表單頁
-app.get("/login", async (req, res) => {
-  res.locals.title = "登入 - " + res.locals.title;
-  res.locals.pageName = "login";
-  res.render("login");
-});
-// 處理登入的表單
-app.post("/login", upload.none(), async (req, res) => {
-  const output = {
-    success: false,
-    bodyData: req.body,
-    code: 0,
-  };
-  let { email, password } = req.body;
-  if (!email || !password) {
-    output.code = 460; // 兩個欄位是必填的
-    return res.json(output);
-  }
-  email = email.trim().toLowerCase(); // 去掉頭尾空白字元
-  password = password.trim();
-
-  const sql = `SELECT * FROM admins WHERE email=? `;
-  const [rows] = await db.query(sql, [email]);
-  if (!rows.length) {
-    output.code = 400; // 表示帳號是錯的
-    return res.json(output);
-  }
-  const row = rows[0];
-  const compare = await bcrypt.compare(password, row.password);
-  if (!compare) {
-    output.code = 420; // 表示密碼是錯的
-    return res.json(output);
-  }
-
-  // 狀態記錄在 session 裡
-  req.session.admin = {
-    email,
-    member_id: row.member_id,
-    nickname: row.nickname,
-  };
-  output.success = true;
-  return res.json(output);
-});
-// 登出
-app.get("/logout", async (req, res) => {
-  delete req.session.admin;
-  if (req.query.u) {
-    return res.redirect(req.query.u);
-  }
-  res.redirect("/");
-});
 
 
-/*
-// react project
-app.use("/", express.static("build"));
-app.get("*", (req, res) => {
-  res.send(
-    `<!doctype html><html lang="zh"><head><meta charset="utf-8"/><link rel="icon" href="/favicon.ico"/><meta name="viewport" content="width=device-width,initial-scale=1"/><meta name="theme-color" content="#000000"/><meta name="description" content="Shinder react hooks"/><link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap@5.2.3/dist/css/bootstrap.min.css"/><title>Shinder react hooks</title><script defer="defer" src="/static/js/main.6a205622.js"></script></head><body><noscript>You need to enable JavaScript to run this app.</noscript><div id="root"></div></body></html>`
-  );
-});
-*/
 // ************** 404 要在所有的路由之後 ****************
 app.use((req, res) => {
   res.status(404).send(`<h1>您走錯路了</h1>
