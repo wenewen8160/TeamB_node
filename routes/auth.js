@@ -4,15 +4,54 @@ import bcrypt from "bcrypt";
 import jwt from "jsonwebtoken";
 import upload from "../utils/upload-images.js";
 import multer from "multer";
+// import cron from 'node-cron';
 
-
+const app = express();
 
 
 
 
 const router = express.Router();
 
-export const checkAuth = (req, res, next) => {
+// 定時任務，每天執行一次
+// cron.schedule('0 0 * * *', async () => {
+//   try {
+//     // 查找未來 7 天內的所有活動
+//     const sql = `
+//       SELECT al.al_id, al.activity_name, r.member_id
+//       FROM activity_list al
+//       JOIN registered r ON al.al_id = r.activity_id
+//       WHERE al.activity_time BETWEEN NOW() AND DATE_ADD(NOW(), INTERVAL 7 DAY);
+//     `;
+//     const [activities] = await db.query(sql);
+
+//     // 為每個用戶創建通知
+//     const notifications = activities.map(activity => [
+//       activity.member_id,
+//       activity.al_id,
+//       `您有一個即將舉行的活動: ${activity.activity_name}`,
+//       'unread', // 設為未讀
+//     ]);
+
+//     // 批量插入通知到 `notifications` 表
+//     if (notifications.length > 0) {
+//       const insertSql = `
+//         INSERT INTO notifications (user_id, activity_id, message, status)
+//         VALUES ?;
+//       `;
+//       await db.query(insertSql, [notifications]);
+//       console.log('通知創建成功');
+//     }
+//   } catch (error) {
+//     console.error('定時任務錯誤:', error);
+//   }
+// });
+
+
+
+
+
+const checkAuth = (req, res, next) => {
   const token = req.header('Authorization')?.split(' ')[1]; // 從 Authorization 標頭中取得 token
   if (!token) {
     return res.status(401).json({ message: "未提供有效的Token" });
@@ -26,6 +65,7 @@ export const checkAuth = (req, res, next) => {
     return res.status(401).json({ message: "Token 驗證失敗" });
   }
 };
+
 
 //處理照片上傳
 router.post("/avatar/api", upload.single("avatar"), (req, res) => {
@@ -59,7 +99,7 @@ router.get('/members/api', async (req, res) => {
     phone,
     email,
     password_hashed,
-    photo_url AS avatar
+    avatar
 FROM members
 LEFT JOIN citys ON citys.city_id = members.city_id;
 
@@ -109,7 +149,7 @@ router.put("/member/api/:id", upload.single("avatar"), async (req, res) => {
         address = ?, 
         city_id = ?, 
         area_id = ?, 
-        photo_url =?
+        avatar =?
         
       WHERE id = ?;
     `;
@@ -225,7 +265,7 @@ router.get('/members/api/:id', async (req, res) => {
     areas.name AS area,
     members.address,
     members.phone,
-    members.photo_url AS avatar,
+    members.avatar,
     GROUP_CONCAT(sport_type.sport_name SEPARATOR ', ') AS sports,
     GROUP_CONCAT(sport_type.id SEPARATOR ', ') AS sport_id
     FROM members 
@@ -376,10 +416,10 @@ router.post("/api/register", upload.single("avatar"), async (req, res) => {
 
       
   
-      // 插入資料到資料庫
+ 
    // 插入會員資料
       var sql = `
-      INSERT INTO members (id, email, password, password_hashed, city_id, area_id, name, gender, birthday_date, phone, address, school,  id_card,  photo_url)
+      INSERT INTO members (id, email, password, password_hashed, city_id, area_id, name, gender, birthday_date, phone, address, school,  id_card, avatar)
       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
       `;
 
@@ -426,10 +466,10 @@ router.post("/api/register", upload.single("avatar"), async (req, res) => {
 
 
 // 登出
-router.get("/logout", async (req, res) => {
-    delete req.session.admin;
-    res.redirect("/member");
-  });
+// router.get("/logout", async (req, res) => {
+//     delete req.session.admin;
+//     res.redirect("/member");
+//   });
 
 
     //jwt登入
@@ -458,19 +498,24 @@ router.post("/login-jwt", async (req, res) => {
   members.id,
   members.name,
   members.gender,
-  members. birthday_date ,
+  members.birthday_date,
+  members.city_id,              -- ✅ 加這行
+  members.area_id,              -- ✅ 加這行
   citys.city_name AS city,
+  MAX(areas.name) AS area,
   members.address,
   members.phone,
   members.email,
   members.password_hashed,
-  members.photo_url AS avatar,
-    GROUP_CONCAT(sport_type.sport_name SEPARATOR ', ') AS sports
+  members.avatar,
+  GROUP_CONCAT(DISTINCT sport_type.id SEPARATOR ',') AS sport_id,  
+  GROUP_CONCAT(DISTINCT sport_type.sport_name SEPARATOR ', ') AS sports
 FROM members 
 JOIN citys ON citys.city_id = members.city_id
+LEFT JOIN areas ON areas.city_id = citys.city_id
 LEFT JOIN member_sports ON members.id = member_sports.member_id
 LEFT JOIN sport_type ON member_sports.sport_id = sport_type.id
-where members.email = ?
+WHERE members.email = ?
 GROUP BY members.id;`;
 
   const [rows] = await db.query(sql, [email]);
@@ -501,18 +546,45 @@ GROUP BY members.id;`;
     email: row.email,
     gender: row.gender,
     phone: row.phone,
+    city_id: row.city_id,
+    area_id: row.area_id,
     city: row.city,
     area: row.area,
     address: row.address,
     name: row.name,
     avatar: row.avatar,
     birthday_date: row.birthday_date,
-    sports:row.sports,
+   sport: row.sport_id,       // ✅ 統一前端使用欄位名稱為 sport（ID 組成的字串）
+sportText: row.sports,     // ✅ 對應名稱
     token,
   };
   
-  res.json(output);
+res.json(output);
 });
+
+
+//取得用戶通知
+// router.get("/notifications/:member_id", checkAuth, async (req, res) => {
+
+//    // **檢查 7 天內的活動**
+//    const activitySql = `
+//    SELECT al.al_id, al.activity_name, al.activity_time
+//    FROM activity_list al
+//    JOIN registered r ON al.al_id = r.activity_id
+//    WHERE r.member_id = ? 
+//    AND al.activity_time BETWEEN NOW() AND DATE_ADD(NOW(), INTERVAL 7 DAY);
+//  `;
+ 
+//  const {member_id} = req.params;
+//  const [activityRows] = await db.query(activitySql, [member_id]);
+
+//  res.json({
+//   success:true,
+//   notifications:activityRows
+//  });
+ 
+// });
+
 
 
 
@@ -525,100 +597,142 @@ router.get("/jwt-data", (req, res) => {
 
 
   // 修改會員資料 API
-router.put('/user-edit', upload.single('avatar'), async (req, res) => {
+  router.put('/user-edit', upload.single('avatar'), async (req, res) => {
     // 驗證是否存在 JWT token
-    const token = req.headers['authorization']?.split(' ')[1]; // 取得 JWT Token
+    const token = req.headers['authorization']; // 取得 JWT Token
+
+    console.log(req.headers['authorization']);
     if (!token) {
       return res.status(401).json({ success: false, message: "未登入或 Token 過期" });
     }
+  
     try {
       // 驗證 Token 並解碼
-      const decoded = jwt.verify(token, process.env.JWT_KEY); // 解碼 JWT
-      const userId = decoded.id;
+      const decoded = jwt.verify(token.replace('Bearer ',''), process.env.JWT_KEY); // 解碼 JWT
+      //decode 包含id email iat token產生的時間戳
+      const userId = decoded.id; 
+      console.log("decoded", decoded);
+      console.log("userId", userId);
   
       // 檢查用戶是否存在
       const sql_edit = `
-    SELECT 
-      members.id,
-      members.name,
-      members.gender,
-      members.phone,
-      members.address,
-      members.avatar,
-      members.birthday_date,
-      members_sports.sport
-    FROM members
-    LEFT JOIN members_sports ON members_sports.user_id = members.id
-    WHERE members.id = ?
-  `;
+        SELECT 
+          members.id,
+          members.name,
+          members.gender,
+          members.phone,
+          members.address,
+          members.avatar,
+          members.birthday_date,
+          member_sports.sport_id 
+        FROM members
+        LEFT JOIN member_sports ON member_sports.member_id = members.id
+        WHERE members.id = ?
+      `;
   
-  const [rows] = await db.query(sql, [userId]);
-  
-  
+      const [rows] = await db.query(sql_edit, [userId]);
   
       if (rows.length === 0) {
         return res.status(404).json({ success: false, message: "找不到用戶資料" });
       }
   
       // 獲取前端傳來的資料
-      const { name, gender, sport, phone, address } = req.body;
-  
-    
-      let sportText = sport;
-      
-      // 確保 `sport` 是字串，若為陣列則轉換成字串
-      if (Array.isArray(sport)) {
-        sportText = sport.join("、"); // 使用 "、" 作為分隔符
+      const { name, gender, sport, phone, address, city_id, area_id } = req.body;
+
+      if (!name || !gender || !phone || !address || !city_id || !area_id) {
+        return res.status(400).json({ success: false, message: "請填寫完整資料" });
       }
-      
+      if (!phone.match(/^(09)\d{8}$/)) {
+        return res.status(400).json({ success: false, message: "手機格式錯誤" });
+      }
+  
+var sql_sport=`
+SELECT GROUP_CONCAT(sport_name) AS sport_names
+FROM sport_type
+WHERE id IN (?);`
+
+let sportIds = sport.split(",").map(id => parseInt(id, 10));
+const [sport_types] =await db.query(sql_sport,[sportIds]);
+let sportText = sport_types[0].sport_names;
+
+  
       // 預設不更新頭像
       let avatarPath = rows[0].avatar;
   
-     
-  
       // 設定儲存路徑及檔案名稱
-  const storage = multer.diskStorage({
-    destination: function (req, file, cb) {
-      // 儲存到 public/imgs 目錄
-      cb(null, path.join(__dirname, "public", "imgs"));
-    },
-    filename: function (req, file, cb) {
-      // 設定檔案名稱為時間戳加原檔名
-      cb(null, Date.now() + path.extname(file.originalname));
-    },
-  });
-  const upload = multer({ storage: storage });
+      const storage = multer.diskStorage({
+        destination: function (req, file, cb) {
+          // 儲存到 public/imgs 目錄
+          cb(null, path.join(__dirname, "public", "imgs"));
+        },
+        filename: function (req, file, cb) {
+          // 設定檔案名稱為時間戳加原檔名
+          cb(null, Date.now() + path.extname(file.originalname));
+        },
+      });
+      const upload = multer({ storage: storage });
   
-   // 如果用戶上傳了新的頭像，則更新圖片路徑
-   if (req.file) {
-    avatarPath = `/imgs/${req.file.filename}`;
-  }
+      // 如果用戶上傳了新的頭像，則更新圖片路徑
+      if (req.file) {
+        avatarPath = `/imgs/${req.file.filename}`;
+      }
   
-      // 更新用戶資料
-      const updateSql = `
-        UPDATE members 
-        SET 
-          name = ?, 
-          gender = ?, 
-          sport = ?, 
-          phone = ?, 
-          address = ?, 
-          avatar = ?ㄌ
-        WHERE id = ?
+      // 更新 users 表中的資料
+      const updateMembersSql = `
+        UPDATE members
+        SET
+          name = ?,
+          gender = ?,
+          phone = ?,
+          address = ?,
+          avatar = ?,
+          city_id = ?, 
+          area_id = ?
+        WHERE id = ?;
       `;
-      const updateValues = [name, gender, sportText, phone, address, avatarPath, userId];
+
+      const updateMembersValues = [name, gender, phone, address, avatarPath, city_id, area_id, userId ];
   
-      await db.query(updateSql, updateValues);
+        // 執行更新操作
+        await db.query(updateMembersSql, updateMembersValues);
+
+      await db.query("DELETE FROM member_sports WHERE member_id = ?", [userId]); 
+
+      // 使用 forEach 來插入新的運動資料
+      if(!sport == ''){
+
+        let sportAry = sport.split(',');  // 解析運動選項，確保傳遞的是正確的字串格式
+        for (let sport_id of sportAry) {
+          var sportSql = `
+            INSERT INTO member_sports (member_id, sport_id)
+            VALUES (?, ?);
+          `;
+          var sportValues = [userId, sport_id];
+          await db.query(sportSql, sportValues);
+        }
   
-      // 返回成功回應
+    
+      }
+
+    
+      const updateSportValues = [sport, userId];  // 更新運動資料
+  
+    
+  
+      // 返回成功回應:後端回覆給前端的
       res.json({
         success: true,
         message: "資料更新成功",
         user: {
+          city_id,       
+          area_id, 
           id: userId,
+          city:city_id,
+          area:area_id,
           name,
           gender,
-          sport: sportText,
+          sport: sport,     
+          sportText: sportText,
           phone,
           address,
           avatar: avatarPath,
@@ -629,6 +743,7 @@ router.put('/user-edit', upload.single('avatar'), async (req, res) => {
       res.status(500).json({ success: false, message: "伺服器錯誤" });
     }
   });
+  
   
 
 //驗證舊密碼
@@ -652,9 +767,6 @@ router.post('/api/check-old-password', checkAuth, async (req, res) => {
 
   return res.json({ success: true });
 });
-
-
-
 
 
 
@@ -699,12 +811,13 @@ router.post('/api/change-password', checkAuth, async (req, res) => {
     await db.query('UPDATE members SET password_hashed = ? WHERE id = ?', [hashedNewPassword, userId]);
 
     res.json({ message: '密碼更改成功，請重新登入' });
-    
+
   } catch (error) {
     console.error('Error changing password:', error);
     res.status(500).json({ message: '伺服器錯誤' });
   }
 });
+
 
 
 //忘記密碼：設定密碼
