@@ -17,6 +17,7 @@ import activityCreateRouter from "./routes/activity-create.js"
 import ecpayRouter from "./routes/ecpay-test-only.js"
 import ordersRouter from "./routes/orders.js"
 import courtRouter from "./routes/court.js"
+import messageRouter from "./routes/messages.js";
 
 
 const MysqlStore = mysql_session(session);
@@ -79,6 +80,8 @@ app.use("/activity-create", activityCreateRouter);
 app.use("/ecpay-test-only", ecpayRouter);
 app.use("/orders", ordersRouter);
 app.use("/court", courtRouter);
+app.use("/messages", messageRouter);
+app.use("/api/messages", messageRouter);
 
 
 
@@ -187,8 +190,156 @@ app.use((req, res) => {
     `);
 });
 
-// ******************************
+// *************** 串接 AI 功能 (模型: gemma2-it-tw:2b )***************
+import { createServer } from 'http';
+import { WebSocketServer } from 'ws';
+import fetch from 'node-fetch'; // npm i node-fetch
+// import { app } from './app.js'; // 如果有 Express app
+
+const server = createServer(app);
+const wss = new WebSocketServer({ server });
+
+wss.on('connection', (ws) => {
+  console.log('✅ WebSocket 已連接');
+
+  ws.on('message', async (msg) => {
+    const userInput = msg.toString();
+    console.log('🟡 收到訊息：', userInput);
+
+    try {
+      // 🔍 擷取日期與關鍵字
+      const matchDate = userInput.match(/\d{4}-\d{2}-\d{2}/);
+      const date = matchDate ? matchDate[0] : null;
+      const keyword = userInput.replace(date || '', '').trim();
+
+      const memberId = 1; // ❗測試用，未來可從登入 session 帶入
+
+      // 📌 查詢活動資料（多表 JOIN）
+      let activitySql = `
+        SELECT 
+        	activity_list.al_id "活動id", 
+          activity_list.activity_name "活動名稱",
+          sport_type.sport_name "活動類型",
+          members.name "團主姓名",
+          members.email "聯絡方式",
+          activity_list.need_num "需求人數",
+          citys.city_name "活動縣市",
+          areas.name "活動區域",
+          court_info.address "活動地址",
+          court_info.name "場地名稱",
+          activity_list.activity_time "活動時間",
+          activity_list.deadline "報名期限",
+          activity_list.payment "活動費用",
+          activity_list.introduction "活動詳情"
+        FROM activity_list
+        JOIN sport_type ON activity_list.sport_type_id = sport_type.id
+        LEFT JOIN members ON activity_list.founder_id = members.id
+        LEFT JOIN areas ON activity_list.area_id = areas.area_id
+        LEFT JOIN citys ON areas.city_id = citys.city_id
+        LEFT JOIN court_info ON activity_list.court_id = court_info.id
+        WHERE 1=1
+      `;
+
+      const activityParams = [];
+
+      // 加上關鍵字模糊搜尋（可擴充比對活動名稱、運動類型、地區、場地名稱）
+      if (keyword) {
+        activitySql += `
+          AND (
+            activity_list.activity_name LIKE ? OR 
+            sport_type.sport_name LIKE ? OR 
+            citys.city_name LIKE ? OR 
+            areas.name LIKE ? OR
+            court_info.name LIKE ? OR
+            members.name LIKE ?
+          )
+        `;
+        const likeKeyword = `%${keyword}%`;
+        activityParams.push(likeKeyword, likeKeyword, likeKeyword, likeKeyword, likeKeyword);
+      }
+      
+      // 加上日期搜尋
+      if (date) {
+        activitySql += ` AND DATE(activity_list.activity_time) = ?`;
+        activityParams.push(date);
+      }
+
+
+      const [activities] = await db.query(activitySql, activityParams);
+
+      // 查詢商品資料
+      let productSql = `
+        SELECT * FROM products 
+        WHERE product_name LIKE ?
+      `;
+      const productParams = [`%${keyword}%`];
+      // if (date) {
+      //   productSql += ' AND launch_date = ?'; // 如果有 launch_date
+      //   productParams.push(date);
+      // }
+      productSql += ' LIMIT 5';
+      const [products] = await db.query(productSql, productParams);
+
+      // 🧠 整理 dbContent 給 AI
+      let dbContent = '';
+
+      if (activities.length > 0) {
+        const activityText = activities.map((a, i) =>
+          `${i + 1}. 活動名稱：${a.activity_name}\n運動類型：${a.sport_name}\n活動時間：${a.date}\n地點：${a.area_name} - ${a.court_name}\n地址：${a.address}\n已報名：${a.registered_people}人\n發起人：${a.founder_name}`
+        ).join("\n\n");
+        dbContent += `📌 查詢到的活動如下：\n${activityText}\n`;
+      }
+
+      if (products.length > 0) {
+        const productText = products.map((p, i) =>
+          `${i + 1}. 商品名稱：${p.product_name}\n價格：${p.price || '未提供'}\n描述：${p.description || '無'}`
+        ).join("\n\n");
+        dbContent += `\n🛒 查詢到的商品如下：\n${productText}`;
+      }
+
+      if (activities.length === 0 && products.length === 0) {
+        dbContent = '查無符合條件的活動或商品資料。';
+      }
+
+      // 🤖 呼叫 LM Studio / Ollama 本地模型
+      const response = await fetch('http://localhost:11434/v1/chat/completions', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          model: 'jslin/gemma2-it-tw:2b',
+          messages: [
+            {
+              role: 'system',
+              content: `
+              你是一位資料查詢小幫手，會根據資料庫資料用台灣繁體中文回答。
+              - ✅ 只能根據查詢結果內容回答，不可以編造不存在的活動或商品。
+              - ❌ 如果找不到答案，請誠實回答「查無符合條件的資料」。
+              - ❌ 不要引用與查詢結果無關的資訊。
+              - ✅ 如果使用者輸入模糊問題，請根據查詢結果盡力推論與建議。
+              - 🧠 禁止引用不存在的資料表、SQL語法、外部文件或範例程式碼。
+              `,
+            },
+            {
+              role: 'user',
+              content: `以下是來自資料庫的查詢結果（若為空請回答查無資料）：\n\n${dbContent}\n\n請根據上面內容回覆使用者的問題：「${userInput}」`,
+            },
+          ],
+          temperature: 0.2,
+        }),
+      });
+
+      const data = await response.json();
+      const reply = data.choices?.[0]?.message?.content || '抱歉，我找不到資料。';
+      ws.send(reply);
+    } catch (err) {
+      console.error('❌ 錯誤：', err);
+      ws.send('伺服器發生錯誤，請稍後再試。');
+    }
+  });
+});
+
+// ********************************************
 const port = process.env.WEB_PORT || 3002;
-app.listen(port, () => {
-  console.log(`伺服器啟動, 使用的 port: ${port}`);
+server.listen(port, () => {
+  console.log(`🚀 伺服器與 WebSocket 啟動中，port: ${port}`);
 });
